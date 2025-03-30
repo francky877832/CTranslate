@@ -1,0 +1,1 @@
+j'utilise reac native node js pour  creer une applicde trraduction pour touristes. L'appli recoit le text en audio, la transcrit en text puis lenvoie sur google recupere la traduction et la lit a haute voix

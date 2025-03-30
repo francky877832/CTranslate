@@ -1,0 +1,256 @@
+const mongoose = require('../../shared/db').mongoose;
+
+const Accountancy = require('../models/accountancyModel');
+const User = require('../models/userModel');
+const ObjectId = mongoose.Types.ObjectId;
+
+
+
+exports.addDailyReport = async (req, res, next) => {
+    console.log(req.body)
+    try {
+        const { user } = req.params
+        const { reason, type, amount, billNo, receivedBy, date, cashBalance, from, supplyTo} = req.body;
+        let receiverUser, senderUser;
+
+        //console.log(user)
+/*
+        if (!user || !reason || !amount || !billNo || !receivedBy || !cashBalance) {
+            return res.status(400).json({ success:false, message: 'All required fields must be filled.' });
+        }
+*/
+
+       
+        //Mise a jour du compte qui effectue l'action
+        /*
+            income == suply
+            outcome = addAccountancy
+        */
+        if(type=='income' || type=="outcome")
+            senderUser = await User.findOneAndUpdate({ _id: new ObjectId(user) },  { $inc: { cashBalance: -parseFloat(amount) } }, { new: true })
+       //Mise a jour du compte en cas de approvisionnement
+       console.log(req.body)
+    if(type==='income' || type==='auto-income') // outcome+income = supply
+    {
+        receiverUser = await User.findOneAndUpdate({ _id: new ObjectId(supplyTo) },  { $inc: { cashBalance: parseFloat(amount) } }, { new: true })
+
+    }
+
+
+    const newCachBalance =  (type=="outcome") ? senderUser.cashBalance : receiverUser.cashBalance
+    //console.log(newCachBalance)
+
+    const newAccountancy = new Accountancy({
+        user : new ObjectId(user),
+        receivedBy, //receiveBy or from
+        supplyTo : supplyTo ?  new ObjectId(supplyTo) : null,
+        type,
+        reason,
+        amount, //-x ou +x
+        billNo,
+        cashBalance : (type=='income' || type=="outcome") ? senderUser.cashBalance : receiverUser.cashBalance,
+        supplyCashBalance : (type==='income' || type==='auto-income') ?  receiverUser.cashBalance : null,
+        date,
+    });
+
+    const savedAccountancy = await newAccountancy.save();
+
+        res.status(201).json({success:true, datas : savedAccountancy, senderUser, receiverUser});
+    } catch (error) {
+        console.log(error)
+        res.status(500).json({ success:false, message: 'Error creating accountancy', error });
+    }
+}
+
+/*
+exports.getCashAccount = async (req, res, next) => {
+    const {user} = req.params
+    try {
+        const accountancies = await Accountancy.find( { $or : [{user:new ObjectId(user)}, {supplyTo:new ObjectId(user)} ]})
+            .populate('user')
+            .populate('receivedBy')
+            .populate('supplyTo')
+            .exec();
+
+        res.status(200).json({success:true, datas:accountancies});
+    } catch (error) {
+        res.status(500).json({ success:false, message: 'Error fetching accountancy', error });
+    }
+}
+*/
+
+exports.getCashAccount = async (req, res) => {
+    try {
+        const { user } = req.params;
+        const userId = new ObjectId(user);
+
+        const accountancies = await Accountancy.aggregate([
+            {
+                $match: {
+                    $or: [{ user: userId }, { supplyTo: userId }]
+                }
+            },
+            {
+                $addFields: {
+                    parsedDate: {
+                        $dateFromString: { dateString: "$date", format: "%d/%m/%Y" }
+                    }
+                }
+            },
+            {
+                $lookup: {
+                    from: "users",
+                    localField: "user",
+                    foreignField: "_id",
+                    as: "user"
+                }
+            },
+            { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: "users",
+                    localField: "supplyTo",
+                    foreignField: "_id",
+                    as: "supplyTo"
+                }
+            },
+            { $unwind: { path: "$supplyTo", preserveNullAndEmptyArrays: true } },
+            { $sort: { parsedDate: 1 } },
+            {
+                $project: { parsedDate: 0 }
+            }
+        ]);
+
+        res.status(200).json({ success: true, datas: accountancies });
+    } catch (error) {
+        res.status(500).json({ success: false, message: 'Error fetching accountancy', error });
+    }
+};
+exports.getAccounters = async (req, res) => {
+    try {
+/*
+    Accountancy.find({ date: { $type: "string" } }).forEach(doc => {
+            const newDate = new Date(
+                doc.date.replace(/(\d{2})\/(\d{2})\/(\d{4})/, '$3-$2-$1') // Convertit "DD/MM/YYYY" en "YYYY-MM-DD"
+            );
+            Accountancy.updateOne(
+                { _id: doc._id },
+                { $set: { date: newDate } }
+            );
+        });
+        */
+        const users = await User.find({});
+
+        if (!users || users.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'No users found',
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            datas: users,
+        });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: 'Server error',
+            error: error.message,
+        });
+    }
+};
+
+
+exports.getSearchedAccountancies = async (req, res, next) => {
+    const searchDate = req.query.date; // On récupère la date envoyée par le client
+
+    console.log(searchDate)
+    const dayMonthYearRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/; // Format JJ/MM/AA
+    const monthYearRegex = /^(\d{1,2})\/(\d{4})$/; // Format MM/AA
+
+    try {
+        let accountancies;
+
+        if (dayMonthYearRegex.test(searchDate)) {
+            const [_, day, month, year] = searchDate.match(dayMonthYearRegex);
+
+            accountancies = await Accountancy.find({
+                date: new RegExp(`^${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}$`)
+            });
+
+        } else if (monthYearRegex.test(searchDate)) {
+            const [_, month, year] = searchDate.match(monthYearRegex);
+
+            accountancies = await Accountancy.find({
+                date: new RegExp(`^\\d{2}/${month.padStart(2, '0')}/${year}$`)
+            });
+        } else {
+            //console.log("accountancies")
+            return res.status(400).json({ success:false, message: "Le format de la date est incorrect. Utilisez JJ/MM/AA ou MM/AA." });
+        }
+        //console.log(accountancies)
+
+        res.json({success:'true', datas : accountancies});
+    } catch (error) {
+        console.log(error)
+        res.status(500).json({success:false, message: "Erreur serveur. Veuillez réessayer plus tard." });
+    }
+}
+
+exports.removeAccountancyRecord = async (req, res, next) => {
+    const { recordId } = req.params
+    //const { record } = req.body
+    //console.log(record)
+
+    try {
+      const result = await Accountancy.deleteOne({ _id: new ObjectId(recordId) });
+
+  
+      if (result.deletedCount === 1) {
+        res.json({success:'true', message : "Document successfully deleted"});
+
+      } else {
+        console.log('No document found with the given ID');
+        return res.status(400).json({ success:false, message: "No document found with the given ID"});
+
+      }
+    } catch (err) {
+      console.error('Error deleting document:', err);
+      return res.status(400).json({ success:false, message: "Error deleting document" });
+
+    }
+}
+
+
+exports.updateBalance = async (req, res, next) => {
+    const { amount } = req.body;
+    const { userId, } = req.params;
+
+    //console.log(req.body)
+    
+    if (typeof amount !== 'number') {
+        return res.status(400).json({ error: 'Amount must be a number' });
+    }
+    
+    try {
+        const user = await User.findByIdAndUpdate(
+                userId,
+                { $inc: { cashBalance: amount } },
+                { new: true }
+        );
+    
+        if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+        }
+    
+            res.json({ message: 'Balance updated', datas: user });
+    } catch (error) {
+        res.status(500).json({ error: 'Server error. Couldn\'t upload the balance' });
+    }
+}
+  
+  
+
+
+
